@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ========================
-# Instalador de Wazuh Agent
+# Instalador de Wazuh Agent (multi-distro)
 # Por: habilweb.com
 # ========================
 
@@ -25,20 +25,37 @@ else
   exit 1
 fi
 
-# REEMPLAZAR ossec.conf PERSONALIZADO
+# DESCARGAR CONFIGURACIÓN PERSONALIZADA
 echo "[+] Descargando ossec.conf personalizado..."
 curl -s -o /var/ossec/etc/ossec.conf $OSSEC_URL
 
-# PERMISOS
+# VALIDAR XML
+echo "[+] Verificando integridad de ossec.conf..."
+if ! command -v xmllint >/dev/null; then
+  echo "[!] xmllint no está instalado. Intentando instalar..."
+  if [ -f /etc/debian_version ]; then
+    apt install libxml2-utils -y
+  elif [ -f /etc/redhat-release ]; then
+    yum install libxml2 -y
+  fi
+fi
+
+if ! xmllint /var/ossec/etc/ossec.conf --noout 2>/dev/null; then
+  echo "[✖] ERROR: ossec.conf descargado no es válido. Abortando instalación."
+  exit 1
+fi
+
+# PERMISOS CORRECTOS
+groupadd ossec 2>/dev/null
 chown root:ossec /var/ossec/etc/ossec.conf
 chmod 640 /var/ossec/etc/ossec.conf
 
-# REINICIAR SERVICIO
+# INICIAR AGENTE
 echo "[+] Iniciando Wazuh Agent..."
 systemctl daemon-reexec
 systemctl enable wazuh-agent
 systemctl restart wazuh-agent
 
-# MOSTRAR ESTADO
-echo "[✔] Instalación finalizada en: $(hostname)"
+# ESTADO
+echo "[✔] Instalación finalizada en: $(hostname -f)"
 systemctl status wazuh-agent --no-pager
