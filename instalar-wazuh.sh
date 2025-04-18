@@ -1,41 +1,57 @@
 #!/bin/bash
 
-MANAGER="agente.webhosting.com.bo"
-OSSEC_URL="https://raw.githubusercontent.com/habilweb/codes/main/ossec.conf"
-AGENT_VERSION="4.11.2"
+# --- CONFIGURACIÓN ---
+WAZUH_MANAGER="agente.webhosting.com.bo"
+AUTH_PASS="clave-secreta"
+OSSEC_CONF_URL="https://raw.githubusercontent.com/habilweb/codes/main/ossec.conf"
 
-if [ -f /etc/debian_version ]; then
-  echo "[+] Detección: Debian/Ubuntu"
-  wget https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_${AGENT_VERSION}-1_amd64.deb
-  WAZUH_MANAGER=$MANAGER WAZUH_PROTOCOL=udp dpkg -i wazuh-agent_${AGENT_VERSION}-1_amd64.deb
+echo "[+] Detectando sistema operativo..."
 
-elif [ -f /etc/redhat-release ]; then
-  echo "[+] Detección: RHEL/AlmaLinux/CloudLinux"
-  curl -O https://packages.wazuh.com/4.x/yum/wazuh-agent-${AGENT_VERSION}-1.x86_64.rpm
-  WAZUH_MANAGER=$MANAGER WAZUH_PROTOCOL=udp rpm -ivh wazuh-agent-${AGENT_VERSION}-1.x86_64.rpm
+# --- DETECCIÓN Y PAQUETE ---
+if grep -qi "Ubuntu" /etc/os-release; then
+  echo "[+] Ubuntu detectado"
+  curl -O https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_4.11.2-1_amd64.deb
+  apt install -y ./wazuh-agent_4.11.2-1_amd64.deb
+elif grep -Eqi "rhel|centos|alma|cloudlinux" /etc/os-release; then
+  echo "[+] RHEL, AlmaLinux o CloudLinux detectado"
+  curl -O https://packages.wazuh.com/4.x/yum/wazuh-agent-4.11.2-1.x86_64.rpm
+  rpm -e wazuh-agent &>/dev/null
+  rm -rf /var/ossec
+  rpm -ivh wazuh-agent-4.11.2-1.x86_64.rpm
 else
-  echo "[!] Sistema no compatible"
+  echo "[-] Sistema no soportado"
   exit 1
 fi
 
-echo "[+] Descargando ossec.conf personalizado..."
-curl -s $OSSEC_URL | iconv -f utf-8 -t utf-8 -c > /var/ossec/etc/ossec.conf
-
-# Validación opcional si tienes xmllint
-if command -v xmllint >/dev/null; then
-  if ! xmllint /var/ossec/etc/ossec.conf --noout 2>/dev/null; then
-    echo "[✖] ERROR: ossec.conf no válido. Abortando."
-    exit 1
-  fi
+# --- ELIMINAR GRUPO/USUARIO SI EXISTE ---
+if getent passwd ossec &>/dev/null; then
+  echo "[+] Eliminando usuario ossec existente"
+  userdel -r ossec
 fi
 
-groupadd ossec 2>/dev/null
+if getent group ossec &>/dev/null; then
+  echo "[+] Eliminando grupo ossec existente"
+  groupdel ossec
+fi
+
+# --- CONFIGURACIÓN ---
+echo "[+] Descargando ossec.conf personalizado..."
+curl -s -o /var/ossec/etc/ossec.conf "$OSSEC_CONF_URL"
+
+echo "[+] Estableciendo permisos..."
 chown root:ossec /var/ossec/etc/ossec.conf
 chmod 640 /var/ossec/etc/ossec.conf
 
+echo "[+] Creando authd.pass..."
+echo "$AUTH_PASS" > /var/ossec/etc/authd.pass
+chmod 600 /var/ossec/etc/authd.pass
+
+# --- INICIAR AGENTE ---
 echo "[+] Iniciando Wazuh Agent..."
 systemctl daemon-reexec
 systemctl enable wazuh-agent
 systemctl restart wazuh-agent
-echo "[✔] Instalación finalizada en: $(hostname -f)"
-systemctl status wazuh-agent --no-pager
+
+# --- VERIFICACIÓN ---
+echo "[✔] Instalación finalizada en: $(hostname)"
+systemctl status wazuh-agent --no-pager | grep Active
