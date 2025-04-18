@@ -27,7 +27,7 @@ fi
 
 # DESCARGAR CONFIGURACIÓN PERSONALIZADA
 echo "[+] Descargando ossec.conf personalizado..."
-curl -s -o /var/ossec/etc/ossec.conf $OSSEC_URL
+curl -s $OSSEC_URL | iconv -f utf-8 -t utf-8 > /var/ossec/etc/ossec.conf
 
 # VALIDAR XML
 echo "[+] Verificando integridad de ossec.conf..."
