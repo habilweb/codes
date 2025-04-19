@@ -1,82 +1,162 @@
 #!/bin/bash
 
-# ---------------------------
-# Script profesional de instalación del agente Wazuh
-# Compatible con RHEL/AlmaLinux/CloudLinux y Ubuntu
-# Optimizado para entornos WHM/cPanel
-# ---------------------------
+set -e
 
-WAZUH_MANAGER="agente.webhosting.com.bo"
+AGENTE_NAME=$(hostname -f)
+MANAGER_HOST="agente.webhosting.com.bo"
 AUTH_PASS="clave-secreta"
-OSSEC_CONF_URL="https://raw.githubusercontent.com/habilweb/codes/main/ossec.conf"
 
 echo "[+] Detectando sistema operativo..."
-
-# --- DETECCIÓN DEL SISTEMA ---
-if grep -qi "Ubuntu" /etc/os-release; then
-  echo "[+] Ubuntu detectado"
-  curl -O https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_4.11.2-1_amd64.deb
-  apt install -y ./wazuh-agent_4.11.2-1_amd64.deb
-elif grep -Eqi "rhel|centos|alma|cloudlinux" /etc/os-release; then
+if [ -f /etc/redhat-release ]; then
   echo "[+] RHEL/AlmaLinux/CloudLinux detectado"
-  curl -O https://packages.wazuh.com/4.x/yum/wazuh-agent-4.11.2-1.x86_64.rpm
-  rpm -e wazuh-agent &>/dev/null
-  rm -rf /var/ossec
-  rpm -ivh wazuh-agent-4.11.2-1.x86_64.rpm
 else
-  echo "[-] Sistema operativo no soportado"
+  echo "[✘] Sistema no soportado en este script."
   exit 1
 fi
 
-# --- LIMPIEZA DE USUARIOS Y GRUPOS CONFLICTIVOS ---
-if getent passwd ossec &>/dev/null; then
-  echo "[+] Eliminando usuario conflictivo: ossec"
-  userdel -r ossec 2>/dev/null
-fi
+# Detener agente si existe
+systemctl stop wazuh-agent 2>/dev/null || true
 
-if getent group ossec &>/dev/null; then
-  echo "[+] Eliminando grupo conflictivo: ossec"
-  groupdel ossec 2>/dev/null
-fi
+# Limpiar instalaciones previas
+rm -rf /var/ossec
+rpm -e wazuh-agent --noscripts 2>/dev/null || true
+groupdel ossec 2>/dev/null || true
+userdel -r ossece 2>/dev/null || true
 
-# --- CREAR GRUPO ossec SI NO EXISTE ---
-if ! getent group ossec &>/dev/null; then
-  echo "[+] Creando grupo ossec..."
-  groupadd ossec
-fi
+# Descargar e instalar el agente
+curl -s -O https://packages.wazuh.com/4.x/yum/wazuh-agent-4.11.2-1.x86_64.rpm
+rpm -ivh wazuh-agent-4.11.2-1.x86_64.rpm
 
-# --- CONFIGURACIÓN DE ossec.conf ---
-echo "[+] Descargando ossec.conf desde GitHub..."
-curl -s -o /var/ossec/etc/ossec.conf "$OSSEC_CONF_URL"
+# Crear configuración personalizada para cPanel
+mkdir -p /var/ossec/etc
+cat <<EOF > /var/ossec/etc/ossec.conf
+<ossec_config>
+  <client>
+    <server>
+      <address>$MANAGER_HOST</address>
+      <port>1514</port>
+      <protocol>udp</protocol>
+    </server>
+    <enrollment>
+      <enabled>yes</enabled>
+      <agent_name>$AGENTE_NAME</agent_name>
+      <authorization_pass_path>etc/authd.pass</authorization_pass_path>
+    </enrollment>
+  </client>
 
-echo "[+] Validando formato XML de ossec.conf..."
-if ! command -v xmllint &>/dev/null; then
-  echo "[-] xmllint no está instalado. Instalando..."
-  if command -v apt &>/dev/null; then
-    apt install -y libxml2-utils
-  else
-    yum install -y libxml2
-  fi
-fi
+  <client_buffer>
+    <disabled>no</disabled>
+    <queue_size>5000</queue_size>
+    <events_per_second>500</events_per_second>
+  </client_buffer>
 
-if ! xmllint --noout /var/ossec/etc/ossec.conf; then
-  echo "❌ El archivo ossec.conf contiene errores XML. Abortando."
-  exit 1
-fi
+  <wodle name="syscollector">
+    <disabled>no</disabled>
+    <interval>1h</interval>
+    <scan_on_start>yes</scan_on_start>
+    <hardware>yes</hardware>
+    <os>yes</os>
+    <network>yes</network>
+    <packages>yes</packages>
+    <ports all="no">yes</ports>
+    <processes>yes</processes>
+  </wodle>
 
-echo "[+] Estableciendo permisos..."
+  <rootcheck>
+    <disabled>no</disabled>
+    <frequency>43200</frequency>
+  </rootcheck>
+
+  <sca>
+    <enabled>yes</enabled>
+    <scan_on_start>yes</scan_on_start>
+    <interval>12h</interval>
+  </sca>
+
+  <syscheck>
+    <disabled>no</disabled>
+    <frequency>43200</frequency>
+    <scan_on_start>yes</scan_on_start>
+
+    <directories check_all="yes" realtime="yes">/home/*/public_html/.htaccess</directories>
+    <directories check_all="yes" realtime="yes">/home/*/public_html/wp-config.php</directories>
+    <directories check_all="yes" realtime="yes">/home/*/public_html/index.php</directories>
+
+    <ignore>/home/*/tmp</ignore>
+    <ignore>/home/*/mail</ignore>
+
+    <skip_nfs>yes</skip_nfs>
+    <skip_dev>yes</skip_dev>
+    <skip_proc>yes</skip_proc>
+    <skip_sys>yes</skip_sys>
+  </syscheck>
+
+  <localfile>
+    <log_format>command</log_format>
+    <command>df -P</command>
+    <frequency>360</frequency>
+  </localfile>
+
+  <localfile>
+    <log_format>full_command</log_format>
+    <command>netstat -tulpn</command>
+    <alias>netstat listening ports</alias>
+    <frequency>360</frequency>
+  </localfile>
+
+  <localfile>
+    <log_format>full_command</log_format>
+    <command>last -n 20</command>
+    <frequency>360</frequency>
+  </localfile>
+
+  <localfile>
+    <log_format>apache</log_format>
+    <location>/usr/local/apache/domlogs/*</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/usr/local/cpanel/logs/access_log</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/usr/local/cpanel/logs/login_log</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/exim_mainlog</location>
+  </localfile>
+  <localfile>
+    <log_format>apache</log_format>
+    <location>/var/log/nginx/access.log</location>
+  </localfile>
+  <localfile>
+    <log_format>apache</log_format>
+    <location>/var/log/nginx/error.log</location>
+  </localfile>
+
+  <active-response>
+    <disabled>no</disabled>
+    <ca_store>etc/wpk_root.pem</ca_store>
+    <ca_verification>yes</ca_verification>
+  </active-response>
+
+  <logging>
+    <log_format>plain</log_format>
+  </logging>
+</ossec_config>
+EOF
+
+# Crear clave de autenticación
+echo "$AUTH_PASS" > /var/ossec/etc/authd.pass
+chmod 600 /var/ossec/etc/authd.pass
 chown root:ossec /var/ossec/etc/ossec.conf
 chmod 640 /var/ossec/etc/ossec.conf
 
-# --- CLAVE DE REGISTRO AUTOMÁTICO ---
-echo "$AUTH_PASS" > /var/ossec/etc/authd.pass
-chmod 600 /var/ossec/etc/authd.pass
-
-# --- INICIO DEL SERVICIO ---
-echo "[+] Iniciando el servicio wazuh-agent..."
+# Iniciar servicio
 systemctl daemon-reexec
 systemctl enable wazuh-agent
 systemctl restart wazuh-agent
+systemctl status wazuh-agent --no-pager
 
-echo "[✔] Agente instalado correctamente en: $(hostname)"
-systemctl status wazuh-agent --no-pager | grep Active
+echo "[✔] Agente instalado correctamente en: $AGENTE_NAME"
